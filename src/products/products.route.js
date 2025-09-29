@@ -24,7 +24,26 @@ router.post("/uploadImages", async (req, res) => {
 });
 
 // إنشاء منتج
-router.post("/create-product", async (req, res) => {
+
+
+// تحويل الأرقام الإنجليزية إلى عربية لعرض الوزن داخل الاسم
+const ROAST_CATEGORIES = ['المحامص العمانية', 'المحامص السعودية'];
+const ALLOWED_WEIGHTS = [150, 200, 250];
+
+// تحويل الأرقام الإنجليزية إلى عربية لعرض الوزن داخل الاسم
+function toArabicDigits(num) {
+  const map = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+  return String(num).replace(/\d/g, (d) => map[Number(d)]);
+}
+
+// يزيل أي لاحقة وزن بالشكل: " - 250 جرام" أو " - ٢٥٠ جرام"
+function stripWeightSuffix(rawName) {
+  const WEIGHT_SUFFIX_RE = /\s*[-–—]\s*(?:\d+|[\u0660-\u0669]+)\s*جرام$/u;
+  return String(rawName).replace(WEIGHT_SUFFIX_RE, '');
+}
+
+
+router.post('/create-product', async (req, res) => {
   try {
     const {
       name,
@@ -35,18 +54,42 @@ router.post("/create-product", async (req, res) => {
       image,
       author,
       size,
-      inStock
+      inStock,
+      weightGrams,
+      stockQty // ← الكمية المتوفرة
     } = req.body;
 
-    if (!name || !category || !description || !price || !image || !author) {
-      return res.status(400).send({ message: "جميع الحقول المطلوبة يجب إرسالها" });
-    }
-    if (category === "حناء بودر" && !size) {
-      return res.status(400).send({ message: "يجب تحديد حجم الحناء" });
+    // تحقق من الحقول الأساسية
+    if (!name || !category || !description || price === undefined || !image || !author) {
+      return res.status(400).send({ message: 'جميع الحقول المطلوبة يجب إرسالها' });
     }
 
+    // تحقق من الكمية
+    const qtyNum = Number(stockQty);
+    if (Number.isNaN(qtyNum) || qtyNum < 0) {
+      return res.status(400).send({ message: 'الكمية المتوفرة يجب أن تكون رقمًا صفرًا أو أكبر' });
+    }
+
+    let finalName = stripWeightSuffix(name);
+    let finalWeight = null;
+
+    // منتجات المحامص: الوزن إلزامي ومقيد
+    if (ROAST_CATEGORIES.includes(category)) {
+      const w = Number(weightGrams);
+      if (!ALLOWED_WEIGHTS.includes(w)) {
+        return res.status(400).send({ message: 'يجب اختيار وزن صحيح (١٥٠، ٢٠٠، ٢٥٠ جرام)' });
+      }
+      finalWeight = w;
+      finalName = `${finalName} - ${toArabicDigits(w)} جرام`;
+    }
+
+    // تحديد حالة التوفر:
+    // - إذا أُرسل inStock صريحًا و = false نُجبرها false.
+    // - وإلا تُحسب تلقائيًا: متوفر إذا الكمية > 0.
+    const inStockFinal = (typeof inStock === 'boolean' ? inStock : true) && qtyNum > 0;
+
     const productData = {
-      name,
+      name: finalName,
       category,
       description,
       price,
@@ -54,20 +97,19 @@ router.post("/create-product", async (req, res) => {
       image,
       author,
       size: size || null,
-      // إن لم تُرسل القيمة يأتي افتراضياً من الـ Schema = true
-      inStock: typeof inStock === 'boolean' ? inStock : true
+      inStock: inStockFinal,
+      weightGrams: finalWeight,
+      stockQty: qtyNum
     };
 
     const newProduct = new Products(productData);
     const savedProduct = await newProduct.save();
-
     res.status(201).send(savedProduct);
   } catch (error) {
-    console.error("Error creating new product", error);
-    res.status(500).send({ message: "Failed to create new product" });
+    console.error('Error creating new product', error);
+    res.status(500).send({ message: 'Failed to create new product' });
   }
 });
-
 
 // جميع المنتجات
 router.get("/", async (req, res) => {
@@ -161,20 +203,48 @@ router.patch(
         description: req.body.description,
         size: req.body.size || null,
         author: req.body.author,
-        inStock: req.body.inStock === 'true',
-
+        inStock: req.body.inStock === "true",
       };
 
-      if (!updateData.name || !updateData.category || !updateData.price || !updateData.description) {
-        return res.status(400).send({ message: "جميع الحقول المطلوبة يجب إرسالها" });
+      // تحقق من الحقول الأساسية
+      if (
+        !updateData.name ||
+        !updateData.category ||
+        !updateData.price ||
+        !updateData.description
+      ) {
+        return res
+          .status(400)
+          .send({ message: "جميع الحقول المطلوبة يجب إرسالها" });
       }
       if (updateData.category === "حناء بودر" && !updateData.size) {
-        return res.status(400).send({ message: "يجب تحديد حجم الحناء" });
+        return res
+          .status(400)
+          .send({ message: "يجب تحديد حجم الحناء" });
+      }
+
+      // ✅ التحقق من الكمية
+      if (req.body.stockQty !== undefined) {
+        const qtyNum = Number(req.body.stockQty);
+        if (Number.isNaN(qtyNum) || qtyNum < 0) {
+          return res
+            .status(400)
+            .send({ message: "الكمية يجب أن تكون رقمًا صفرًا أو أكبر" });
+        }
+        updateData.stockQty = qtyNum;
+
+        // إذا ما أُرسل inStock → اجعلها متوفرة إذا الكمية > 0
+        if (req.body.inStock === undefined) {
+          updateData.inStock = qtyNum > 0;
+        }
       }
 
       // keepImages مُرسلة من الواجهة كنص JSON
       let keepImages = [];
-      if (typeof req.body.keepImages === "string" && req.body.keepImages.trim() !== "") {
+      if (
+        typeof req.body.keepImages === "string" &&
+        req.body.keepImages.trim() !== ""
+      ) {
         try {
           const parsed = JSON.parse(req.body.keepImages);
           if (Array.isArray(parsed)) keepImages = parsed;
@@ -187,7 +257,9 @@ router.patch(
       let newImageUrls = [];
       if (Array.isArray(req.files) && req.files.length > 0) {
         newImageUrls = await Promise.all(
-          req.files.map((file) => uploadBufferToCloudinary(file.buffer, "products"))
+          req.files.map((file) =>
+            uploadBufferToCloudinary(file.buffer, "products")
+          )
         );
       }
 

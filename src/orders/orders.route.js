@@ -1,11 +1,15 @@
 const express = require("express");
 const cors = require("cors");
-const Order = require("./orders.model");
+const Order = require("./orders.model"); // إبقائها كما هي عندك
 const verifyToken = require("../middleware/verifyToken");
 const verifyAdmin = require("../middleware/verifyAdmin");
 const router = express.Router();
 const axios = require("axios");
+const mongoose = require("mongoose");
 require("dotenv").config();
+
+// ✅ استيراد نموذج المنتجات لاستخدام stockQty
+const Product = require("../products/products.model");
 
 const THAWANI_API_KEY = process.env.THAWANI_API_KEY; 
 const THAWANI_API_URL = process.env.THAWANI_API_URL;
@@ -15,10 +19,7 @@ const app = express();
 app.use(cors({ origin: "http://localhost:5173" }));
 app.use(express.json());
 
-// Create checkout session
 // ========================= routes/orders.js (create-checkout-session) =========================
-// ===== Helpers =====
-// ========================= routes/create-checkout-session (نهائي) =========================
 const ORDER_CACHE = new Map(); // key: client_reference_id -> value: orderPayload
 
 // ===== Helpers =====
@@ -64,13 +65,14 @@ router.post("/create-checkout-session", async (req, res) => {
     depositMode, // إذا true: المقدم 10 ر.ع (من ضمنه التوصيل)
     giftCard,    // { from, to, phone, note } اختياري (على مستوى الطلب)
     gulfCountry, // الدولة المختارة داخل "دول الخليج" (إن وُجدت)
+    shippingMethod, // ✅ جديد: "المنزل" (2) أو "المكتب" (1) داخل عُمان
   } = req.body;
 
   // رسوم الشحن (ر.ع.)
   const shippingFee =
     country === "دول الخليج"
       ? (gulfCountry === "الإمارات" ? 4 : 5)
-      : 2;
+      : (shippingMethod === "المكتب" ? 1 : 2); // ✅ داخل عُمان: المكتب=1 ، المنزل=2
 
   const DEPOSIT_AMOUNT_OMR = 10; // المقدم الثابت
 
@@ -207,7 +209,6 @@ router.post("/create-checkout-session", async (req, res) => {
   }
 });
 
-
 // في ملف routes/orders.js
 router.get('/order-with-products/:orderId', async (req, res) => {
     try {
@@ -239,6 +240,7 @@ function calculateProductPrice(product, quantity, selectedSize) {
 
 // ========================= routes/orders.js (confirm-payment) =========================
 // ========================= routes/confirm-payment (نهائي) =========================
+// ========================= routes/orders.js (confirm-payment معدل) =========================
 router.post("/confirm-payment", async (req, res) => {
   const { client_reference_id } = req.body;
 
@@ -269,7 +271,7 @@ router.post("/confirm-payment", async (req, res) => {
       {
         headers: {
           "Content-Type": "application/json",
-          "thawani-api-key": THAWANI_API_KEY,
+          "thawani-api-key": THAWANI_API_KEY, // SECRET KEY
         },
       }
     );
@@ -317,6 +319,9 @@ router.post("/confirm-payment", async (req, res) => {
     // 4) احتمال وجود طلب سابق
     let order = await Order.findOne({ orderId: client_reference_id });
 
+    // 🟡 هل كان الطلب مكتملًا قبل الآن؟
+    const wasCompletedBefore = !!(order && order.status === "completed");
+
     // المبلغ المدفوع فعليًا (من ثواني) بالريال
     const paidAmountOMR = Number(session.total_amount || 0) / 1000;
 
@@ -324,33 +329,33 @@ router.post("/confirm-payment", async (req, res) => {
     const cached = ORDER_CACHE.get(client_reference_id) || {};
 
     // تطبيع المنتجات من الكاش مع تضمين بطاقة الهدية على مستوى كل منتج
-    // ملاحظة: لا نُنشئ بطاقات وهمية؛ فقط نحترم الموجود في كل عنصر.
     const productsFromCache = Array.isArray(cached.products)
       ? cached.products.map((p) => {
-          const giftCard = normalizeGift(p.giftCard); // إن وُجدت على مستوى المنتج
+          const giftCard = normalizeGift(p.giftCard);
           return {
             productId: p.productId || p._id,
-            quantity: p.quantity,
+            quantity: Number(p.quantity) || 0, // 🔒 تأكيد أنها رقم
             name: p.name,
-            price: p.price, // ر.ع.
+            price: Number(p.price) || 0,       // ر.ع.
             image: Array.isArray(p.image) ? p.image[0] : p.image,
             category: p.category || "",
             measurements: p.measurements || {},
-            giftCard, // <-- تُحفظ فقط إن كانت موجودة فعلاً
+            giftCard,
           };
         })
       : [];
 
-    // fallback ذكي لرسوم الشحن إذا لم تتوفر
+    // fallback لرسوم الشحن
     const resolvedShippingFee = (() => {
       if (typeof metaShippingFee !== "undefined") return metaShippingFee;
       if (typeof cached.shippingFee !== "undefined") return Number(cached.shippingFee);
       const country = (cached.country || metaCountry || "").trim();
       const gulfCountryFromMeta = (meta.gulfCountry || meta.gulf_country || "").trim();
       if (country === "دول الخليج") {
-        return gulfCountryFromMeta === "الإمارات" ? 4 : 5; // ر.ع
+        return gulfCountryFromMeta === "الإمارات" ? 4 : 5;
       }
-      return 2; // ر.ع داخل عُمان
+      if (cached.shippingMethod === "المكتب") return 1;
+      return 2;
     })();
 
     // 5) أنشئ/حدّث الطلب
@@ -359,8 +364,8 @@ router.post("/confirm-payment", async (req, res) => {
 
       order = new Order({
         orderId: cached.orderId || client_reference_id,
-        products: productsFromCache, // <-- كل منتج يحتفظ ببطاقة هديته إن وُجدت
-        amount: paidAmountOMR, // المدفوع فعليًا
+        products: productsFromCache,
+        amount: paidAmountOMR,
         shippingFee: resolvedShippingFee,
         customerName: cached.customerName || metaCustomerName,
         customerPhone: cached.customerPhone || metaCustomerPhone,
@@ -371,10 +376,9 @@ router.post("/confirm-payment", async (req, res) => {
         status: "completed",
         depositMode: !!cached.depositMode,
         remainingAmount: Number(cached.remainingAmount || 0),
-        giftCard: orderLevelGift, // (اختياري) الحقل العام
+        giftCard: orderLevelGift,
       });
     } else {
-      // تحديث الطلب الموجود
       order.status = "completed";
       order.amount = paidAmountOMR;
 
@@ -389,12 +393,10 @@ router.post("/confirm-payment", async (req, res) => {
         order.shippingFee = resolvedShippingFee;
       }
 
-      // لو لدينا منتجات من الكاش (الأحدث)، نُحدّث قائمة المنتجات كاملة
       if (productsFromCache.length > 0) {
         order.products = productsFromCache;
       }
 
-      // نطبّع البطاقة العامة إن كانت غير محفوظة
       if (!hasGiftValues(order.giftCard) && hasGiftValues(cached.giftCard)) {
         order.giftCard = normalizeGift(cached.giftCard);
       }
@@ -402,16 +404,83 @@ router.post("/confirm-payment", async (req, res) => {
 
     // تخزين session_id ووقت الدفع
     order.paymentSessionId = session_id;
-    order.paidAt = new Date();
+    if (!order.paidAt) order.paidAt = new Date();
 
     await order.save();
+
+    // ✅ خصم المخزون مرة واحدة فقط (لو ما كان مكتمل قبل)
+    if (!wasCompletedBefore && Array.isArray(order.products) && order.products.length > 0) {
+      const bulkOps = order.products
+        .filter((it) => it.productId && (Number(it.quantity) || 0) > 0)
+        .map((it) => {
+          const absQty = Math.max(0, Number(it.quantity) || 0); // 🔒 كمية موجبة
+          let _id;
+          try {
+            _id = new mongoose.Types.ObjectId(it.productId);
+          } catch {
+            // productId ليس ObjectId (نص) — جرّب المطابقة كنص
+            return {
+              updateOne: {
+                filter: { _id: it.productId },
+                update: [
+                  {
+                    $set: {
+                      stockQty: {
+                        $max: [
+                          {
+                            $subtract: [{ $ifNull: ["$stockQty", 0] }, absQty],
+                          },
+                          0,
+                        ],
+                      },
+                    },
+                  },
+                ],
+              },
+            };
+          }
+          return {
+            updateOne: {
+              filter: { _id },
+              update: [
+                {
+                  $set: {
+                    stockQty: {
+                      $max: [
+                        {
+                          $subtract: [{ $ifNull: ["$stockQty", 0] }, absQty],
+                        },
+                        0,
+                      ],
+                    },
+                  },
+                },
+              ],
+            },
+          };
+        });
+
+      if (bulkOps.length > 0) {
+        try {
+          await Product.bulkWrite(bulkOps, { ordered: false });
+        } catch (e) {
+          // لا نُفشل الاستجابة على مشاكل المخزون؛ نكتفي بالتسجيل
+          console.error("Bulk stock decrement error:", e?.message || e);
+        }
+      }
+    }
 
     // تنظيف الكاش بعد الحفظ
     ORDER_CACHE.delete(client_reference_id);
 
     res.json({ order });
   } catch (error) {
-    console.error("Error confirming payment:", error?.response?.data || error);
+    console.error("Error confirming payment (details):", {
+      status: error?.response?.status,
+      data: error?.response?.data,
+      headers: error?.response?.headers,
+      message: error?.message,
+    });
     res.status(500).json({
       error: "Failed to confirm payment",
       details: error?.response?.data || error.message,
