@@ -15,7 +15,7 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(
     cors({
-        origin:"https://bunah-f.vercel.app",
+        origin:"https://bunah3.com",
 
         // origin: "https://www.royasow.store",//مال الفرونت اند
         credentials: true,
@@ -24,7 +24,7 @@ app.use(
 
 // دعم طلبات OPTIONS (Preflight Requests)
 app.options('*', (req, res) => {
-    res.header('Access-Control-Allow-Origin', 'https://bunah-f.vercel.app');
+    res.header('Access-Control-Allow-Origin', 'https://bunah3.com');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.send();
