@@ -16,7 +16,7 @@ const THAWANI_API_URL = process.env.THAWANI_API_URL;
 const publish_key = "HGvTMLDssJghr9tlN9gr4DVYt0qyBy";
 
 const app = express();
-app.use(cors({ origin: "http://localhost:5173" }));
+app.use(cors({ origin: "https://www.bunah3.com" }));
 app.use(express.json());
 
 // ========================= routes/orders.js (create-checkout-session) =========================
@@ -53,6 +53,7 @@ const normalizeGift = (gc) =>
     : undefined;
 
 // ========================= create-checkout-session =========================
+// ========================= routes/orders.js (create-checkout-session نهائي) =========================
 router.post("/create-checkout-session", async (req, res) => {
   const {
     products,
@@ -65,14 +66,14 @@ router.post("/create-checkout-session", async (req, res) => {
     depositMode, // إذا true: المقدم 10 ر.ع (من ضمنه التوصيل)
     giftCard,    // { from, to, phone, note } اختياري (على مستوى الطلب)
     gulfCountry, // الدولة المختارة داخل "دول الخليج" (إن وُجدت)
-    shippingMethod, // ✅ جديد: "المنزل" (2) أو "المكتب" (1) داخل عُمان
+    shippingMethod, // ✅ "المنزل" (2) أو "المكتب" (1) داخل عُمان
   } = req.body;
 
   // رسوم الشحن (ر.ع.)
   const shippingFee =
     country === "دول الخليج"
       ? (gulfCountry === "الإمارات" ? 4 : 5)
-      : (shippingMethod === "المكتب" ? 1 : 2); // ✅ داخل عُمان: المكتب=1 ، المنزل=2
+      : (shippingMethod === "المكتب" ? 1 : 2); // داخل عُمان: المكتب=1 ، المنزل=2
 
   const DEPOSIT_AMOUNT_OMR = 10; // المقدم الثابت
 
@@ -139,6 +140,7 @@ router.post("/create-checkout-session", async (req, res) => {
         image: Array.isArray(p.image) ? p.image[0] : p.image,
         measurements: p.measurements || {},
         category: p.category || "",
+        roasterName: p.roasterName || "", // ✅ اسم المحمصة إن وُجد
         // ✅ بطاقة الهدية على مستوى "كل منتج"
         giftCard: normalizeGift(p.giftCard) || undefined,
       })),
@@ -165,8 +167,8 @@ router.post("/create-checkout-session", async (req, res) => {
       client_reference_id: nowId,
       mode: "payment",
       products: lineItems,
-      success_url: "http://localhost:5173/SuccessRedirect?client_reference_id=" + nowId,
-      cancel_url: "http://localhost:5173/cancel",
+      success_url: "https://www.bunah3.com/SuccessRedirect?client_reference_id=" + nowId,
+      cancel_url: "https://www.bunah3.com/cancel",
       metadata: {
         email: String(email || "غير محدد"),
         customer_name: String(customerName || ""),
@@ -208,6 +210,7 @@ router.post("/create-checkout-session", async (req, res) => {
     });
   }
 });
+
 
 // في ملف routes/orders.js
 router.get('/order-with-products/:orderId', async (req, res) => {
@@ -340,6 +343,8 @@ router.post("/confirm-payment", async (req, res) => {
             image: Array.isArray(p.image) ? p.image[0] : p.image,
             category: p.category || "",
             measurements: p.measurements || {},
+                        roasterName: p.roasterName || "", // ✅ اسم المحمصة إن وُجد
+
             giftCard,
           };
         })

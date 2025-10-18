@@ -12,16 +12,17 @@ const ProductSchema = new mongoose.Schema(
     rating:      { type: Number, default: 0 },
     author:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 
+    // حالة التوفر تُحفظ تلقائيًا "متوفر" ما لم تُرسل false صراحةً
     inStock:     { type: Boolean, default: true },
 
-    // الوزن بالجرام – مطلوب فقط لفئات المحامص (يُحفظ رقمًا)
+    // الوزن بالجرام – مطلوب فقط لفئات المحامص
     weightGrams: { type: Number, default: null },
 
-    // حجم الحناء إن لزم
-    size:        { type: String, default: null },
+    // اسم المحمصة (اختياري)
+    roasterName: { type: String, default: '' },
 
-    // الكمية المتوفرة في المخزون
-    stockQty:    { type: Number, required: true, min: 0, default: 0 }
+    // حجم الحناء إن لزم
+    size:        { type: String, default: null }
   },
   { timestamps: true }
 );

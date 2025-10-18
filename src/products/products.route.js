@@ -37,11 +37,10 @@ function toArabicDigits(num) {
 }
 
 // يزيل أي لاحقة وزن بالشكل: " - 250 جرام" أو " - ٢٥٠ جرام"
-function stripWeightSuffix(rawName) {
-  const WEIGHT_SUFFIX_RE = /\s*[-–—]\s*(?:\d+|[\u0660-\u0669]+)\s*جرام$/u;
-  return String(rawName).replace(WEIGHT_SUFFIX_RE, '');
+function stripWeightSuffix(rawName = '') {
+  const WEIGHT_SUFFIX_RE = /\s*[-–—]\s*(?:\d+|[\u0660-\u0669]+)\s*جرام\s*$/u;
+  return String(rawName).replace(WEIGHT_SUFFIX_RE, '').trim();
 }
-
 
 router.post('/create-product', async (req, res) => {
   try {
@@ -54,9 +53,9 @@ router.post('/create-product', async (req, res) => {
       image,
       author,
       size,
-      inStock,
-      weightGrams,
-      stockQty // ← الكمية المتوفرة
+      inStock,      // اختياري؛ إن لم يُرسل نحفظه true
+      weightGrams,  // إلزامي عند فئات المحامص
+      roasterName,  // اختياري
     } = req.body;
 
     // تحقق من الحقول الأساسية
@@ -64,16 +63,11 @@ router.post('/create-product', async (req, res) => {
       return res.status(400).send({ message: 'جميع الحقول المطلوبة يجب إرسالها' });
     }
 
-    // تحقق من الكمية
-    const qtyNum = Number(stockQty);
-    if (Number.isNaN(qtyNum) || qtyNum < 0) {
-      return res.status(400).send({ message: 'الكمية المتوفرة يجب أن تكون رقمًا صفرًا أو أكبر' });
-    }
-
+    // تجهيز الاسم والوزن
     let finalName = stripWeightSuffix(name);
     let finalWeight = null;
 
-    // منتجات المحامص: الوزن إلزامي ومقيد
+    // في فئات المحامص: الوزن إلزامي ومقيّد
     if (ROAST_CATEGORIES.includes(category)) {
       const w = Number(weightGrams);
       if (!ALLOWED_WEIGHTS.includes(w)) {
@@ -83,10 +77,8 @@ router.post('/create-product', async (req, res) => {
       finalName = `${finalName} - ${toArabicDigits(w)} جرام`;
     }
 
-    // تحديد حالة التوفر:
-    // - إذا أُرسل inStock صريحًا و = false نُجبرها false.
-    // - وإلا تُحسب تلقائيًا: متوفر إذا الكمية > 0.
-    const inStockFinal = (typeof inStock === 'boolean' ? inStock : true) && qtyNum > 0;
+    // حالة التوفر: تحفظ تلقائيًا متوفر (true) ما لم يُرسل false صراحةً
+    const inStockFinal = (typeof inStock === 'boolean') ? inStock : true;
 
     const productData = {
       name: finalName,
@@ -99,7 +91,7 @@ router.post('/create-product', async (req, res) => {
       size: size || null,
       inStock: inStockFinal,
       weightGrams: finalWeight,
-      stockQty: qtyNum
+      roasterName: roasterName || '',
     };
 
     const newProduct = new Products(productData);
@@ -110,9 +102,8 @@ router.post('/create-product', async (req, res) => {
     res.status(500).send({ message: 'Failed to create new product' });
   }
 });
-
 // جميع المنتجات
-router.get("/", async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const {
       category,
@@ -120,46 +111,68 @@ router.get("/", async (req, res) => {
       color,
       minPrice,
       maxPrice,
+      roasterName, // 👈 قادم من الواجهة عند اختيار محمصة
       page = 1,
       limit = 10,
     } = req.query;
 
     const filter = {};
 
-    if (category && category !== "all") {
+    // الفئة
+    if (category && category !== 'all' && category !== 'الكل') {
       filter.category = category;
-      if (category === "حناء بودر" && size) {
+
+      // حجم الحناء لفئة "حناء بودر"
+      if (category === 'حناء بودر' && size) {
         filter.size = size;
       }
-    }
 
-    if (color && color !== "all") filter.color = color;
-
-    if (minPrice && maxPrice) {
-      const min = parseFloat(minPrice);
-      const max = parseFloat(maxPrice);
-      if (!isNaN(min) && !isNaN(max)) {
-        filter.price = { $gte: min, $lte: max };
+      // فلتر المحامص — فقط عند فئات المحامص واسم محمصة ليس "الكل"
+      if (
+        ROAST_CATEGORIES.includes(category) &&
+        roasterName &&
+        roasterName !== 'الكل'
+      ) {
+        filter.roasterName = roasterName;
       }
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    // اللون (إن وجد)
+    if (color && color !== 'all' && color !== 'الكل') {
+      filter.color = color;
+    }
+
+    // السعر: دعم حد أدنى فقط أو أعلى فقط أو الاثنين معًا
+    const min = parseFloat(minPrice);
+    const max = parseFloat(maxPrice);
+    if (!isNaN(min) && !isNaN(max)) {
+      filter.price = { $gte: min, $lte: max };
+    } else if (!isNaN(min)) {
+      filter.price = { $gte: min };
+    } else if (!isNaN(max)) {
+      filter.price = { $lte: max };
+    }
+
+    // ترقيم الصفحات
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, parseInt(limit) || 10);
+    const skip = (pageNum - 1) * limitNum;
+
     const totalProducts = await Products.countDocuments(filter);
-    const totalPages = Math.ceil(totalProducts / parseInt(limit));
+    const totalPages = Math.max(1, Math.ceil(totalProducts / limitNum));
 
     const products = await Products.find(filter)
+      .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit))
-      .populate("author", "email")
-      .sort({ createdAt: -1 });
+      .limit(limitNum)
+      .populate('author', 'email');
 
     res.status(200).send({ products, totalPages, totalProducts });
   } catch (error) {
-    console.error("Error fetching products:", error);
-    res.status(500).send({ message: "Failed to fetch products" });
+    console.error('Error fetching products:', error);
+    res.status(500).send({ message: 'Failed to fetch products' });
   }
 });
-
 // منتج واحد (يدعم مسارين)
 router.get(["/:id", "/product/:id"], async (req, res) => {
   try {

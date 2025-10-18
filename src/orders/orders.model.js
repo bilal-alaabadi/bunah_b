@@ -23,6 +23,7 @@ const OrderSchema = new mongoose.Schema(
         price: { type: Number, required: true }, // سعر الوحدة بالعملة الأساسية (ر.ع.)
         image: { type: String },
         category: { type: String },
+        roasterName: { type: String, default: "" }, // ✅ اسم المحمصة إن وُجد
         measurements: {
           length: { type: String },
           sleeveLength: { type: String },
