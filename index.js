@@ -15,7 +15,7 @@ app.use(cookieParser());
 const allowedOrigins = [
   "https://bunah3.com",
   // للتطوير المحلي (اختياري):
-  "https://www.bunah3.com",
+  "http://localhost:5173",
 ];
 
 const corsOptions = {
