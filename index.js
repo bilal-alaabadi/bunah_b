@@ -1,57 +1,53 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
-const cookieParser = require("cookie-parser");
-require("dotenv").config();
-
 const app = express();
-const port = process.env.PORT || 5000;
+const path = require("path");
+require("dotenv").config();
+const cookieParser = require("cookie-parser");
+const bodyParser = require("body-parser");
+const port = 5011;
 
-// ---------- Middleware ----------
-app.use(express.json({ limit: "25mb" }));
+// Remove bodyParser (redundant with express.json())
+app.use(express.json({ limit: "25mb" }));  // Handles JSON payloads
+app.use(express.urlencoded({ extended: true, limit: "25mb" }));  // For URL-encoded data
 app.use(cookieParser());
 
-// ضع كل الدومينات المسموح بها هنا
+// Enhanced CORS configuration
 const allowedOrigins = [
+  "https://www.bunah3.com",
   "https://bunah3.com",
-  // للتطوير المحلي (اختياري):
   "http://localhost:5173",
 ];
 
+// 👇 نفس الإعدادات مع إضافة PATCH
 const corsOptions = {
   origin: function (origin, callback) {
-    // السماح لطلبات بدون Origin (Postman, curl, health checks)
+    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
 
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
     } else {
-      return callback(new Error("Not allowed by CORS"));
+      callback(new Error("Not allowed by CORS"));
     }
   },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // ← PATCH مضافة هنا
+  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  optionsSuccessStatus: 204, // لبعض المتصفحات القديمة
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 };
 
 app.use(cors(corsOptions));
 
-// حتى لا يُخزّن البروكسي/المتصفح هيدر ثابت لمنشأ واحد
-app.use((req, res, next) => {
-  res.header("Vary", "Origin");
-  next();
-});
+// OPTIONS handler (for preflight) — استخدم نفس الخيارات
+app.options('*', cors(corsOptions));  // Let the cors middleware handle it
 
-// (اختياري) هاندلر واضح لأخطاء CORS
-app.use((err, req, res, next) => {
-  if (err && err.message === "Not allowed by CORS") {
-    return res.status(403).json({ error: "CORS: Origin not allowed", origin: req.headers.origin });
-  }
-  next(err);
-});
+// رفع الصور
+const uploadImage = require("./src/utils/uploadImage");
 
-// ---------- Routes & DB ----------
+// جميع الروابط
 const authRoutes = require("./src/users/user.route");
 const productRoutes = require("./src/products/products.route");
 const reviewRoutes = require("./src/reviews/reviews.router");
@@ -64,17 +60,45 @@ app.use("/api/reviews", reviewRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/stats", statsRoutes);
 
-async function main() {
-  await mongoose.connect(process.env.DB_URL);
-  console.log("MongoDB is successfully connected.");
-}
-main().catch(console.error);
+// الاتصال بقاعدة البيانات
+main()
+    .then(() => console.log("MongoDB is successfully connected."))
+    .catch((err) => console.log(err));
 
-app.get("/", (req, res) => {
-  res.send("يعمل الان");
+async function main() {
+    await mongoose.connect(process.env.DB_URL);
+
+    app.get("/", (req, res) => {
+        res.send("يعمل الان");
+    });
+}
+
+// رفع صورة واحدة
+app.post("/uploadImage", (req, res) => {
+    uploadImage(req.body.image)
+        .then((url) => res.send(url))
+        .catch((err) => res.status(500).send(err));
 });
 
-// --------- Start server ---------
+// رفع عدة صور
+app.post("/uploadImages", async (req, res) => {
+    try {
+        const { images } = req.body;
+        if (!images || !Array.isArray(images)) {
+            return res.status(400).send("Invalid request: images array is required.");
+        }
+
+        const uploadPromises = images.map((image) => uploadImage(image));
+        const urls = await Promise.all(uploadPromises);
+
+        res.send(urls);
+    } catch (error) {
+        console.error("Error uploading images:", error);
+        res.status(500).send("Internal Server Error");
+    }
+});
+
+// تشغيل الخادم
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+    console.log(`Server is running on port ${port}`);
 });
