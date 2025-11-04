@@ -198,7 +198,7 @@ router.patch(
   "/update-product/:id",
   verifyToken,
   verifyAdmin,
-  upload.array("image"), // استقبال عدة صور جديدة (Files)
+  upload.array("image"),
   async (req, res) => {
     try {
       const productId = req.params.id;
@@ -208,85 +208,92 @@ router.patch(
         return res.status(404).send({ message: "المنتج غير موجود" });
       }
 
-      const updateData = {
-        name: req.body.name,
-        category: req.body.category,
-        price: req.body.price,
-        oldPrice: req.body.oldPrice || null,
-        description: req.body.description,
-        size: req.body.size || null,
-        author: req.body.author,
-        inStock: req.body.inStock === "true",
+      // القراءة من FormData (جميع القيم نصوص)
+      const body = req.body;
+
+      // تجهيز الحقول الأساسية
+      const baseUpdate = {
+        name: body.name,
+        category: body.category,
+        price: body.price,
+        oldPrice: body.oldPrice || null,
+        description: body.description,
+        size: body.size || null,
+        author: body.author,
+        inStock: body.inStock === "true",
+        // حقول التحميص
+        weightGrams: body.weightGrams ? Number(body.weightGrams) : null,
+        roasterName: body.roasterName || "",
       };
 
       // تحقق من الحقول الأساسية
-      if (
-        !updateData.name ||
-        !updateData.category ||
-        !updateData.price ||
-        !updateData.description
-      ) {
-        return res
-          .status(400)
-          .send({ message: "جميع الحقول المطلوبة يجب إرسالها" });
+      if (!baseUpdate.name || !baseUpdate.category || !baseUpdate.price || !baseUpdate.description) {
+        return res.status(400).send({ message: "جميع الحقول المطلوبة يجب إرسالها" });
       }
-      if (updateData.category === "حناء بودر" && !updateData.size) {
-        return res
-          .status(400)
-          .send({ message: "يجب تحديد حجم الحناء" });
+      if (baseUpdate.category === "حناء بودر" && !baseUpdate.size) {
+        return res.status(400).send({ message: "يجب تحديد حجم الحناء" });
       }
 
-      // ✅ التحقق من الكمية
-      if (req.body.stockQty !== undefined) {
-        const qtyNum = Number(req.body.stockQty);
+      // ✅ التحقق من الكمية الاختيارية
+      if (body.stockQty !== undefined) {
+        const qtyNum = Number(body.stockQty);
         if (Number.isNaN(qtyNum) || qtyNum < 0) {
-          return res
-            .status(400)
-            .send({ message: "الكمية يجب أن تكون رقمًا صفرًا أو أكبر" });
+          return res.status(400).send({ message: "الكمية يجب أن تكون رقمًا صفرًا أو أكبر" });
         }
-        updateData.stockQty = qtyNum;
+        baseUpdate.stockQty = qtyNum;
 
-        // إذا ما أُرسل inStock → اجعلها متوفرة إذا الكمية > 0
-        if (req.body.inStock === undefined) {
-          updateData.inStock = qtyNum > 0;
+        if (body.inStock === undefined) {
+          baseUpdate.inStock = qtyNum > 0;
         }
       }
 
-      // keepImages مُرسلة من الواجهة كنص JSON
+      // ✅ منطق فئات التحميص مطابق للإضافة
+      let finalName = stripWeightSuffix(baseUpdate.name);
+      let finalWeight = null;
+
+      if (ROAST_CATEGORIES.includes(baseUpdate.category)) {
+        const w = Number(baseUpdate.weightGrams);
+        if (!ALLOWED_WEIGHTS.includes(w)) {
+          return res.status(400).send({ message: "يجب اختيار وزن صحيح (١٥٠، ٢٠٠، ٢٥٠ جرام)" });
+        }
+        finalWeight = w;
+        finalName = `${finalName} - ${toArabicDigits(w)} جرام`;
+      }
+
+      baseUpdate.name = finalName;
+      baseUpdate.weightGrams = finalWeight;
+      // roasterName اختياري — إن لم يُرسل نخليه نصًا فارغًا (تم أعلاه)
+
+      // keepImages كنص JSON
       let keepImages = [];
-      if (
-        typeof req.body.keepImages === "string" &&
-        req.body.keepImages.trim() !== ""
-      ) {
+      if (typeof body.keepImages === "string" && body.keepImages.trim() !== "") {
         try {
-          const parsed = JSON.parse(req.body.keepImages);
+          const parsed = JSON.parse(body.keepImages);
           if (Array.isArray(parsed)) keepImages = parsed;
         } catch (_) {
           keepImages = [];
         }
       }
 
-      // رفع الصور الجديدة (إن وُجدت) من الـ buffer إلى Cloudinary
+      // رفع صور جديدة (إن وُجدت)
       let newImageUrls = [];
       if (Array.isArray(req.files) && req.files.length > 0) {
         newImageUrls = await Promise.all(
-          req.files.map((file) =>
-            uploadBufferToCloudinary(file.buffer, "products")
-          )
+          req.files.map((file) => uploadBufferToCloudinary(file.buffer, "products"))
         );
       }
 
-      // إن كان هناك تعديل للصور، دمّج المُبقاة + الجديدة
+      // دمج الصور (إن تم إرسال أي تعديل)
       if (keepImages.length > 0 || newImageUrls.length > 0) {
-        updateData.image = [...keepImages, ...newImageUrls];
+        baseUpdate.image = [...keepImages, ...newImageUrls];
       } else {
-        // لا نلمس الصور إن لم تصل keepImages ولم ترفع صور جديدة
-        delete updateData.image;
+        // لا نلمس الصور إطلاقًا إذا لم يصل keepImages ولم تُرفع صور جديدة
+        delete baseUpdate.image;
       }
 
       const updatedProduct = await Products.findByIdAndUpdate(
         productId,
-        { $set: updateData },
+        { $set: baseUpdate },
         { new: true, runValidators: true }
       );
 
